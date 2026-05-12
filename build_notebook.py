@@ -103,7 +103,7 @@ Class imbalance handled via `class_weight="balanced"` (sklearn) and `scale_pos_w
 """),
 
     code("""\
-comparison = compare_models(X_train, y_train, cv_folds=5)
+comparison = compare_models(X_train, y_train, cv_folds=3)
 print(comparison.to_string(index=False))"""),
 
     # ── 4 Train best model ────────────────────────────────────────────────────
