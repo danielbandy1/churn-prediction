@@ -21,6 +21,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from src.features import build_features, get_X_y, get_feature_names, ONEHOT_COLUMNS
 from src.train import compare_models, train_best_model, save_model
 from src.explain import global_importance
+from src.business import threshold_sweep, top_n_simulation, plot_expected_value_curve, plot_cumulative_gains
+from src.evaluate import contract_cohort_analysis, tenure_cohort_analysis, plot_cohort_analysis
 
 DATA_PATH = pathlib.Path("data/raw/WA_Fn-UseC_-Telco-Customer-Churn.csv")
 FIGURES_DIR = pathlib.Path("figures")
@@ -140,6 +142,35 @@ def main():
             plot_shap(result["model"], X_test, feature_names)
         except Exception as e:
             print(f"  SHAP figure skipped: {e}")
+
+        # Business impact figures
+        print("  Generating business impact figures...")
+        y_test_arr = y_test.values
+        y_prob_arr = result["y_prob"]
+
+        LTV, SAVE_RATE, CONTACT_COST = 600.0, 0.30, 15.0
+        df_sweep = threshold_sweep(y_test_arr, y_prob_arr, LTV, SAVE_RATE, CONTACT_COST)
+        fig_ev = plot_expected_value_curve(df_sweep, contact_cost=CONTACT_COST)
+        save_figure(fig_ev, "expected_value_curve.png")
+
+        fig_cg = plot_cumulative_gains(y_test_arr, y_prob_arr)
+        save_figure(fig_cg, "cumulative_gains.png")
+
+        # Cohort error analysis
+        print("  Generating cohort analysis figures...")
+        y_pred_arr = result["y_pred"]
+        contract_df = contract_cohort_analysis(y_test_arr, y_pred_arr, y_prob_arr, X_test)
+        tenure_df   = tenure_cohort_analysis(y_test_arr, y_pred_arr, y_prob_arr, X_test)
+        fig_cohort  = plot_cohort_analysis(contract_df, tenure_df)
+        save_figure(fig_cohort, "cohort_analysis.png")
+
+        # Print business summary
+        sim = top_n_simulation(y_test_arr, y_prob_arr, 200, LTV, SAVE_RATE, CONTACT_COST)
+        print(f"\n  Business Impact (top 200 at-risk customers):")
+        print(f"    Churners captured : {sim['true_positives']} / {int(y_test_arr.sum())}")
+        print(f"    Precision@200     : {sim['precision_at_n']:.0%}")
+        print(f"    Expected revenue  : ${sim['revenue_saved']:,.0f}")
+        print(f"    Lift over random  : {sim['lift_over_random']:.1f}×")
 
 
 if __name__ == "__main__":
