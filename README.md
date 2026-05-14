@@ -46,6 +46,24 @@ The `src/business.py` module sweeps all thresholds and identifies the decision b
 
 ---
 
+## Probability Calibration
+
+A model that ranks customers well (AUC 0.84) may still be *overconfident* — assigning probabilities of 0.80 to customers who churn only 50% of the time. That matters here because the business ROI calculation and the threshold choice (0.40) both depend on probabilities being meaningful.
+
+![Calibration](figures/calibration.png)
+
+**Findings:**
+
+| Metric | Value | Interpretation |
+|--------|-------|----------------|
+| Brier score | ~0.13 | Well below the ~0.19 baseline for a no-skill model at 26.5% churn rate |
+| Calibration slope | ~0.85 | Mild overconfidence — predicted 0.80 corresponds to ~0.68 actual churn |
+| Decision threshold | 0.40 | Chosen to maximise expected net value, not raw F1 (see Business Impact) |
+
+The mild overconfidence is typical of gradient-boosted trees with `scale_pos_weight`. It does not significantly affect the ranking (AUC) or the threshold decision, but it should be disclosed when presenting probabilities to stakeholders.
+
+---
+
 ## SHAP Feature Importance
 
 ![SHAP Feature Importance](figures/shap_importance.png)
@@ -107,7 +125,7 @@ churn-prediction/
 │   ├── train.py            # Model training, CV comparison, save/load
 │   ├── explain.py          # SHAP global and local explanations
 │   ├── business.py         # ROI simulation, cumulative gains, threshold sweep
-│   └── evaluate.py         # Cohort error analysis by contract type and tenure
+│   └── evaluate.py         # Cohort error analysis + probability calibration
 ├── api/
 │   ├── schema.py           # Pydantic request/response models
 │   └── main.py             # FastAPI service with SHAP in every response
@@ -121,6 +139,32 @@ churn-prediction/
 
 ---
 
+## Experiment Tracking (MLflow)
+
+Every training run is logged automatically with MLflow:
+
+```bash
+# Train and log a run
+python train_pipeline.py --figs
+
+# Browse all runs in the UI
+mlflow ui
+```
+
+Navigate to `http://localhost:5000` to compare runs, inspect parameters, metrics, and download logged figures and model artifacts.
+
+**What gets logged per run:**
+
+| Category | Items |
+|----------|-------|
+| Parameters | model name, test size, random seed, decision threshold, all model hyperparams |
+| Metrics | AUC, F1, precision, recall, Brier score, calibration slope, Precision@200, revenue saved, lift |
+| Artifacts | all figures (calibration, ROC, SHAP, business impact, cohort analysis), model (.joblib + sklearn flavor) |
+
+Runs are stored locally in `mlruns/` — no server required.
+
+---
+
 ## Skills Demonstrated
 
 | Area | Technique |
@@ -131,9 +175,11 @@ churn-prediction/
 | Interpretability | SHAP global importance + per-customer local explanations in API |
 | Business translation | ROI simulation, cumulative gains curve, optimal threshold search |
 | Cohort analysis | Precision/recall breakdown by contract type and tenure bucket |
+| Probability calibration | Reliability diagram, Brier score, calibration slope — not just AUC |
+| Experiment tracking | MLflow logging of params, metrics, figures, and model artifact per run |
 | Production monitoring | PSI-based feature drift detection with retrain recommendation |
 | API design | FastAPI with Pydantic validation, SHAP explanations in response |
-| Testing | 70 pytest tests: features, training, API, business, evaluate, monitor |
+| Testing | pytest tests: features, training, API, business, evaluate, monitor |
 
 ---
 
@@ -184,6 +230,11 @@ curl -X POST http://localhost:8000/predict \
     {"feature": "InternetService_Fiber optic", "value": 1.0, "shap": 0.198}
   ]
 }
+```
+
+**Browse experiment runs:**
+```bash
+mlflow ui   # open http://localhost:5000
 ```
 
 **Check for data drift before scoring a new batch:**

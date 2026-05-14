@@ -13,6 +13,8 @@ import sys
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import mlflow
+import mlflow.sklearn
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
@@ -22,10 +24,14 @@ from src.features import build_features, get_X_y, get_feature_names, ONEHOT_COLU
 from src.train import compare_models, train_best_model, save_model
 from src.explain import global_importance
 from src.business import threshold_sweep, top_n_simulation, plot_expected_value_curve, plot_cumulative_gains
-from src.evaluate import contract_cohort_analysis, tenure_cohort_analysis, plot_cohort_analysis
+from src.evaluate import (
+    calibration_analysis, plot_calibration,
+    contract_cohort_analysis, tenure_cohort_analysis, plot_cohort_analysis,
+)
 
 DATA_PATH = pathlib.Path("data/raw/WA_Fn-UseC_-Telco-Customer-Churn.csv")
 FIGURES_DIR = pathlib.Path("figures")
+DECISION_THRESHOLD = 0.40   # tuned to maximise expected net value (see business.py)
 
 
 def load_raw() -> pd.DataFrame:
@@ -122,55 +128,109 @@ def main():
         print(comparison.to_string(index=False))
         print()
 
-    print(f"Training {args.model} on full training set...")
-    result = train_best_model(X_train, y_train, X_test, y_test, model_name=args.model)
+    mlflow.set_experiment("churn-prediction")
+    with mlflow.start_run(run_name=args.model):
+        mlflow.log_params({
+            "model_name":         args.model,
+            "test_size":          0.20,
+            "random_state":       42,
+            "decision_threshold": DECISION_THRESHOLD,
+        })
 
-    print(f"\n  AUC       : {result['auc']}")
-    print(f"  F1        : {result['f1']}")
-    print(f"  Precision : {result['precision']}")
-    print(f"  Recall    : {result['recall']}")
+        print(f"Training {args.model} on full training set...")
+        result = train_best_model(X_train, y_train, X_test, y_test, model_name=args.model)
 
-    model_path = save_model(result["model"], feature_names)
-    print(f"\nModel saved → {model_path}")
-
-    if args.figs:
-        print("Generating figures...")
-        plot_roc(result)
-        plot_pr(result)
-        plot_confusion(result)
+        # Log model hyperparams from the fitted estimator
         try:
-            plot_shap(result["model"], X_test, feature_names)
-        except Exception as e:
-            print(f"  SHAP figure skipped: {e}")
+            fitted = result["model"]
+            clf    = getattr(fitted, "named_steps", {}).get("clf", fitted)
+            keep   = ("n_estimators", "max_depth", "learning_rate", "subsample",
+                      "colsample_bytree", "scale_pos_weight", "class_weight", "C", "max_iter")
+            mlflow.log_params({k: v for k, v in clf.get_params().items() if k in keep})
+        except Exception:
+            pass
 
-        # Business impact figures
-        print("  Generating business impact figures...")
-        y_test_arr = y_test.values
-        y_prob_arr = result["y_prob"]
+        # ── Calibration ───────────────────────────────────────────────────────
+        cal = calibration_analysis(y_test.values, result["y_prob"])
 
-        LTV, SAVE_RATE, CONTACT_COST = 600.0, 0.30, 15.0
-        df_sweep = threshold_sweep(y_test_arr, y_prob_arr, LTV, SAVE_RATE, CONTACT_COST)
-        fig_ev = plot_expected_value_curve(df_sweep, contact_cost=CONTACT_COST)
-        save_figure(fig_ev, "expected_value_curve.png")
+        # ── Metrics ───────────────────────────────────────────────────────────
+        mlflow.log_metrics({
+            "auc":                 result["auc"],
+            "f1":                  result["f1"],
+            "precision":           result["precision"],
+            "recall":              result["recall"],
+            "brier_score":         cal["brier_score"],
+            "calibration_slope":   cal["calibration_slope"],
+        })
 
-        fig_cg = plot_cumulative_gains(y_test_arr, y_prob_arr)
-        save_figure(fig_cg, "cumulative_gains.png")
+        print(f"\n  AUC              : {result['auc']}")
+        print(f"  F1               : {result['f1']}")
+        print(f"  Precision        : {result['precision']}")
+        print(f"  Recall           : {result['recall']}")
+        print(f"  Brier score      : {cal['brier_score']}  (lower is better; ~0.20 = random)")
+        print(f"  Calibration slope: {cal['calibration_slope']}  (1.0 = perfectly calibrated)")
 
-        # Cohort error analysis
-        print("  Generating cohort analysis figures...")
-        y_pred_arr = result["y_pred"]
-        contract_df = contract_cohort_analysis(y_test_arr, y_pred_arr, y_prob_arr, X_test)
-        tenure_df   = tenure_cohort_analysis(y_test_arr, y_pred_arr, y_prob_arr, X_test)
-        fig_cohort  = plot_cohort_analysis(contract_df, tenure_df)
-        save_figure(fig_cohort, "cohort_analysis.png")
+        model_path = save_model(result["model"], feature_names)
+        mlflow.log_artifact(str(model_path), artifact_path="model")
+        mlflow.sklearn.log_model(result["model"], artifact_path="sklearn-model")
+        print(f"\nModel saved → {model_path}")
 
-        # Print business summary
-        sim = top_n_simulation(y_test_arr, y_prob_arr, 200, LTV, SAVE_RATE, CONTACT_COST)
-        print(f"\n  Business Impact (top 200 at-risk customers):")
-        print(f"    Churners captured : {sim['true_positives']} / {int(y_test_arr.sum())}")
-        print(f"    Precision@200     : {sim['precision_at_n']:.0%}")
-        print(f"    Expected revenue  : ${sim['revenue_saved']:,.0f}")
-        print(f"    Lift over random  : {sim['lift_over_random']:.1f}×")
+        if args.figs:
+            print("Generating figures...")
+            plot_roc(result)
+            plot_pr(result)
+            plot_confusion(result)
+            try:
+                plot_shap(result["model"], X_test, feature_names)
+            except Exception as e:
+                print(f"  SHAP figure skipped: {e}")
+
+            # Calibration figure
+            print("  Generating calibration figure...")
+            fig_cal = plot_calibration(y_test.values, result["y_prob"], model_name=args.model)
+            save_figure(fig_cal, "calibration.png")
+
+            # Business impact figures
+            print("  Generating business impact figures...")
+            y_test_arr = y_test.values
+            y_prob_arr = result["y_prob"]
+
+            LTV, SAVE_RATE, CONTACT_COST = 600.0, 0.30, 15.0
+            df_sweep = threshold_sweep(y_test_arr, y_prob_arr, LTV, SAVE_RATE, CONTACT_COST)
+            fig_ev = plot_expected_value_curve(df_sweep, contact_cost=CONTACT_COST)
+            save_figure(fig_ev, "expected_value_curve.png")
+
+            fig_cg = plot_cumulative_gains(y_test_arr, y_prob_arr)
+            save_figure(fig_cg, "cumulative_gains.png")
+
+            # Cohort error analysis
+            print("  Generating cohort analysis figures...")
+            y_pred_arr = result["y_pred"]
+            contract_df = contract_cohort_analysis(y_test_arr, y_pred_arr, y_prob_arr, X_test)
+            tenure_df   = tenure_cohort_analysis(y_test_arr, y_pred_arr, y_prob_arr, X_test)
+            fig_cohort  = plot_cohort_analysis(contract_df, tenure_df)
+            save_figure(fig_cohort, "cohort_analysis.png")
+
+            # Log all figures to MLflow
+            for fig_file in sorted(FIGURES_DIR.glob("*.png")):
+                mlflow.log_artifact(str(fig_file), artifact_path="figures")
+
+            # Business summary
+            sim = top_n_simulation(y_test_arr, y_prob_arr, 200, LTV, SAVE_RATE, CONTACT_COST)
+            mlflow.log_metrics({
+                "business_precision_at_200": round(sim["precision_at_n"], 4),
+                "business_revenue_saved":    round(sim["revenue_saved"], 2),
+                "business_lift":             round(sim["lift_over_random"], 4),
+            })
+            print(f"\n  Business Impact (top 200 at-risk customers):")
+            print(f"    Churners captured : {sim['true_positives']} / {int(y_test_arr.sum())}")
+            print(f"    Precision@200     : {sim['precision_at_n']:.0%}")
+            print(f"    Expected revenue  : ${sim['revenue_saved']:,.0f}")
+            print(f"    Lift over random  : {sim['lift_over_random']:.1f}×")
+
+        run_id = mlflow.active_run().info.run_id
+        print(f"\nMLflow run ID : {run_id}")
+        print("View runs     : mlflow ui")
 
 
 if __name__ == "__main__":

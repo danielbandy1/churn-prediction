@@ -42,6 +42,7 @@ from sklearn.model_selection import train_test_split
 from src.features import build_features, get_X_y, get_feature_names
 from src.train import compare_models, train_best_model, save_model, load_model
 from src.explain import global_importance, local_explanation
+from src.evaluate import calibration_analysis, plot_calibration
 
 pd.set_option("display.max_columns", 40)
 pd.set_option("display.float_format", "{:.4f}".format)
@@ -156,8 +157,36 @@ plt.savefig("figures/evaluation_plots.png", dpi=150, bbox_inches="tight")
 plt.show()
 print("Saved figures/evaluation_plots.png")"""),
 
-    # ── 6 SHAP ────────────────────────────────────────────────────────────────
-    md("""## 6. SHAP Feature Importance
+    # ── 6 Calibration ────────────────────────────────────────────────────────
+    md("""## 6. Probability Calibration
+
+A model with AUC 0.84 ranks customers well — but are its *probabilities* reliable?
+A customer scored at 0.70 should churn roughly 70% of the time in reality.
+If not, the threshold choice (0.40) and the business ROI calculation are both off.
+
+**Metrics:**
+- **Brier score**: mean squared error between predicted probability and actual outcome.
+  Lower is better; 0.0 = perfect, ~0.20 = expected for a random scorer at 26.5% churn rate.
+- **Reliability diagram**: plots mean predicted probability vs actual churn fraction per bin.
+  A perfectly calibrated model follows the diagonal.
+- **Calibration slope**: linear fit of actual on predicted. 1.0 = on-target, < 1.0 = overconfident.
+"""),
+
+    code("""\
+from src.evaluate import calibration_analysis, plot_calibration
+
+cal = calibration_analysis(y_test.values, result["y_prob"])
+print(f"Brier score         : {cal['brier_score']:.4f}")
+print(f"Calibration slope   : {cal['calibration_slope']:.3f}  (1.0 = perfect)")
+print(f"Calibration intercept: {cal['calibration_intercept']:.3f}  (0.0 = perfect)")
+
+fig = plot_calibration(y_test.values, result["y_prob"], model_name="XGBoost")
+plt.savefig("figures/calibration.png", dpi=150, bbox_inches="tight")
+plt.show()
+print("Saved figures/calibration.png")"""),
+
+    # ── 7 SHAP ────────────────────────────────────────────────────────────────
+    md("""## 7. SHAP Feature Importance
 
 SHAP (SHapley Additive exPlanations) assigns each feature a contribution to the
 prediction for every customer. Mean |SHAP| gives a model-level importance ranking
@@ -178,8 +207,8 @@ plt.show()
 print("Saved figures/shap_importance.png")
 print(top15[["feature","mean_abs_shap"]].to_string(index=False))"""),
 
-    # ── 7 Local explanation ───────────────────────────────────────────────────
-    md("## 7. Local Explanation — Single Customer"),
+    # ── 8 Local explanation ───────────────────────────────────────────────────
+    md("## 8. Local Explanation — Single Customer"),
 
     code("""\
 # Pick a customer with high predicted churn probability
@@ -192,8 +221,8 @@ local_exp = local_explanation(result["model"], X_example, feature_names)
 print("\\nTop drivers:")
 print(local_exp.head(8).to_string(index=False))"""),
 
-    # ── 8 Save model ──────────────────────────────────────────────────────────
-    md("## 8. Save Model"),
+    # ── 9 Save model ──────────────────────────────────────────────────────────
+    md("## 9. Save Model"),
 
     code("""\
 path = save_model(result["model"], feature_names)
@@ -205,8 +234,8 @@ probs_reloaded = model_loaded.predict_proba(X_test)[:, 1]
 assert len(probs_reloaded) == len(X_test)
 print("Load verification OK")"""),
 
-    # ── 9 Key findings ────────────────────────────────────────────────────────
-    md("""## 9. Key Findings
+    # ── 10 Key findings ───────────────────────────────────────────────────────
+    md("""## 10. Key Findings
 
 | Metric | Value |
 |--------|-------|

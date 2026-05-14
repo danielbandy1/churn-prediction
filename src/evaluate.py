@@ -1,6 +1,5 @@
 """
-Cohort-level error analysis: breaks model predictions down by customer segment
-to surface systematic failure modes.
+Cohort-level error analysis and probability calibration diagnostics.
 """
 
 import numpy as np
@@ -8,7 +7,76 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from sklearn.metrics import precision_score, recall_score, f1_score
+from sklearn.calibration import calibration_curve
+from sklearn.metrics import brier_score_loss, precision_score, recall_score, f1_score
+
+
+def calibration_analysis(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    n_bins: int = 10,
+) -> dict:
+    """
+    Compute calibration metrics for the model.
+
+    Returns:
+        brier_score:          lower is better; 0.0 = perfect, ~0.20 = random on this dataset
+        fraction_of_positives: actual churn rate per predicted-probability bin
+        mean_predicted_value:  mean predicted probability per bin
+        calibration_slope:    linear fit slope — 1.0 means probabilities are on-target
+        calibration_intercept: linear fit intercept — 0.0 is ideal
+    """
+    brier = float(brier_score_loss(y_true, y_prob))
+    fop, mpv = calibration_curve(y_true, y_prob, n_bins=n_bins, strategy="uniform")
+    slope, intercept = np.polyfit(mpv, fop, 1)
+    return {
+        "brier_score":           round(brier, 4),
+        "fraction_of_positives": fop,
+        "mean_predicted_value":  mpv,
+        "calibration_slope":     round(float(slope), 4),
+        "calibration_intercept": round(float(intercept), 4),
+    }
+
+
+def plot_calibration(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    model_name: str = "XGBoost",
+    n_bins: int = 10,
+) -> plt.Figure:
+    """
+    Two-panel calibration figure:
+      left  — reliability diagram (predicted probability vs actual churn rate)
+      right — histogram of predicted probabilities with decision threshold marked
+    """
+    cal = calibration_analysis(y_true, y_prob, n_bins=n_bins)
+    fop = cal["fraction_of_positives"]
+    mpv = cal["mean_predicted_value"]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+
+    ax1.plot([0, 1], [0, 1], "k--", lw=1, label="Perfect calibration")
+    ax1.plot(mpv, fop, "s-", color="darkorange", lw=2, ms=7, label=model_name)
+    ax1.set_xlabel("Mean predicted probability")
+    ax1.set_ylabel("Fraction of positives (actual churn rate)")
+    ax1.set_title(
+        f"Reliability Diagram — {model_name}\n"
+        f"Brier score = {cal['brier_score']:.4f}  |  "
+        f"Calibration slope = {cal['calibration_slope']:.3f}"
+    )
+    ax1.legend()
+    ax1.set_xlim(0, 1)
+    ax1.set_ylim(0, 1)
+
+    ax2.hist(y_prob, bins=30, color="steelblue", alpha=0.75, edgecolor="white")
+    ax2.axvline(0.40, color="red", ls="--", lw=1.5, label="Decision threshold (0.40)")
+    ax2.set_xlabel("Predicted churn probability")
+    ax2.set_ylabel("Count")
+    ax2.set_title("Distribution of Predicted Probabilities")
+    ax2.legend()
+
+    plt.tight_layout()
+    return fig
 
 
 def tenure_bucket(tenure: pd.Series) -> pd.Series:

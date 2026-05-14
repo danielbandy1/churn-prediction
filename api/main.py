@@ -16,8 +16,9 @@ from fastapi import FastAPI, HTTPException
 # Allow running from repo root or api/ directory
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
+import src.features as features_module
 from src.features import build_features
-from src.train import load_model
+from src.train import load_model, load_model_with_metadata
 from src.explain import local_explanation
 from api.schema import CustomerFeatures, PredictionResponse, HealthResponse
 
@@ -33,7 +34,18 @@ async def lifespan(app: FastAPI):
     global _model, _feature_names
     if not MODEL_PATH.exists():
         raise RuntimeError(f"Model not found at {MODEL_PATH}. Run train_pipeline.py first.")
-    _model, _feature_names = load_model(MODEL_PATH)
+    # load_model remains backward-compatible; use the metadata-aware loader
+    try:
+        _model, _feature_names, onehot_columns = load_model_with_metadata(MODEL_PATH)
+    except Exception:
+        # Fall back to older loader signature
+        _model, _feature_names = load_model(MODEL_PATH)
+        onehot_columns = []
+    # Ensure feature-engineering alignment for inference
+    try:
+        features_module.ONEHOT_COLUMNS = list(onehot_columns or [])
+    except Exception:
+        pass
     yield
     _model = None
     _feature_names = []

@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 import pytest
 from src.evaluate import (
+    calibration_analysis,
+    plot_calibration,
     tenure_bucket,
     cohort_metrics,
     contract_cohort_analysis,
@@ -36,6 +38,58 @@ X_FEATURES = pd.DataFrame({
     "tenure": TENURE_VALUES,
     **_OH_CONTRACTS,
 })
+
+
+# ── calibration_analysis ──────────────────────────────────────────────────────
+
+def test_calibration_analysis_required_keys():
+    cal = calibration_analysis(Y_TRUE, Y_PROB)
+    for key in ("brier_score", "fraction_of_positives", "mean_predicted_value",
+                "calibration_slope", "calibration_intercept"):
+        assert key in cal
+
+
+def test_calibration_brier_in_range():
+    cal = calibration_analysis(Y_TRUE, Y_PROB)
+    assert 0.0 <= cal["brier_score"] <= 1.0
+
+
+def test_calibration_arrays_same_length():
+    cal = calibration_analysis(Y_TRUE, Y_PROB)
+    assert len(cal["fraction_of_positives"]) == len(cal["mean_predicted_value"])
+
+
+def test_calibration_perfect_model_low_brier():
+    y = np.array([0, 0, 0, 1, 1, 1])
+    p = np.array([0.02, 0.03, 0.02, 0.97, 0.96, 0.98])
+    cal = calibration_analysis(y, p, n_bins=4)
+    assert cal["brier_score"] < 0.05
+
+
+def test_calibration_random_worse_than_good():
+    rng = np.random.default_rng(7)
+    y = np.tile([0, 1], 50)
+    p_good   = np.where(y == 1, 0.85, 0.15).astype(float)
+    p_random = np.clip(rng.normal(0.5, 0.3, len(y)), 0, 1)
+    assert calibration_analysis(y, p_good)["brier_score"] < calibration_analysis(y, p_random)["brier_score"]
+
+
+def test_calibration_slope_near_one_for_good_model():
+    y = np.tile([0, 1], 100)
+    p = np.where(y == 1, 0.80, 0.20).astype(float)
+    cal = calibration_analysis(y, p, n_bins=5)
+    assert 0.5 < cal["calibration_slope"] < 2.0
+
+
+def test_plot_calibration_returns_figure():
+    fig = plot_calibration(Y_TRUE, Y_PROB)
+    assert fig is not None
+
+
+def test_plot_calibration_has_two_axes():
+    import matplotlib.pyplot as plt
+    fig = plot_calibration(Y_TRUE, Y_PROB)
+    assert len(fig.axes) == 2
 
 
 # ── tenure_bucket ─────────────────────────────────────────────────────────────

@@ -80,15 +80,33 @@ def build_features(df: pd.DataFrame, fit: bool = False) -> pd.DataFrame:
             c for c in df.columns
             if any(c.startswith(p + "_") for p in _ONEHOT_COLS)
         ]
-    elif ONEHOT_COLUMNS:
-        # Align to training columns: add missing dummies as 0, drop extra
-        for col in ONEHOT_COLUMNS:
-            if col not in df.columns:
-                df[col] = 0
-        df = df[[c for c in df.columns
-                 if c not in [cc for cc in df.columns
-                               if cc.startswith(tuple(p + "_" for p in _ONEHOT_COLS))
-                               and cc not in ONEHOT_COLUMNS]]]
+    else:
+        # If ONEHOT_COLUMNS wasn't populated (e.g. new process), try to
+        # load persisted metadata from the saved model artifact so that
+        # inference aligns deterministically with training.
+        if not ONEHOT_COLUMNS:
+            try:
+                import joblib, pathlib
+                model_path = pathlib.Path("models") / "churn_model.joblib"
+                if model_path.exists():
+                    obj = joblib.load(model_path)
+                    ONEHOT_COLUMNS = obj.get("onehot_columns", ONEHOT_COLUMNS)
+            except Exception:
+                # Best-effort only — leave ONEHOT_COLUMNS empty if loading fails
+                pass
+
+        if ONEHOT_COLUMNS:
+            # Add missing dummy columns as 0
+            for col in ONEHOT_COLUMNS:
+                if col not in df.columns:
+                    df[col] = 0
+            # Drop any extra dummy columns that were not present during training
+            extra_dummy_cols = [
+                c for c in df.columns
+                if any(c.startswith(p + "_") for p in _ONEHOT_COLS) and c not in ONEHOT_COLUMNS
+            ]
+            if extra_dummy_cols:
+                df = df.drop(columns=extra_dummy_cols)
 
     # ── Engineered features ───────────────────────────────────────────────────
     service_cols = [

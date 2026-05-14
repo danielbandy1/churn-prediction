@@ -9,6 +9,7 @@ import joblib
 import pathlib
 import numpy as np
 import pandas as pd
+from src import features as features_module
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -106,11 +107,28 @@ def train_best_model(
 def save_model(model, feature_names: list[str], path: pathlib.Path | None = None) -> pathlib.Path:
     MODEL_DIR.mkdir(exist_ok=True)
     path = path or MODEL_DIR / "churn_model.joblib"
-    joblib.dump({"model": model, "feature_names": feature_names}, path)
+    # Persist the trained model alongside the feature list and the
+    # one-hot column metadata so the API can align inference inputs.
+    joblib.dump({
+        "model": model,
+        "feature_names": feature_names,
+        "onehot_columns": getattr(features_module, "ONEHOT_COLUMNS", []),
+    }, path)
     return path
 
 
 def load_model(path: pathlib.Path | None = None) -> tuple:
+    """Backward-compatible loader returning (model, feature_names).
+
+    Use `load_model_with_metadata` if you need the persisted `onehot_columns`.
+    """
     path = path or MODEL_DIR / "churn_model.joblib"
     obj = joblib.load(path)
     return obj["model"], obj["feature_names"]
+
+
+def load_model_with_metadata(path: pathlib.Path | None = None) -> tuple:
+    """Load the model and return (model, feature_names, onehot_columns)."""
+    path = path or MODEL_DIR / "churn_model.joblib"
+    obj = joblib.load(path)
+    return obj["model"], obj["feature_names"], obj.get("onehot_columns", [])
