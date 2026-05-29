@@ -1,243 +1,274 @@
 # Telco Customer Churn Prediction
 
-End-to-end ML system: feature engineering → model comparison → XGBoost → SHAP explainability → FastAPI deployment → business impact simulation → drift monitoring.
+An end-to-end machine learning project for identifying telecom customers at risk of churn, explaining the drivers behind each prediction, and translating model scores into retention actions.
 
-## The Problem
+This repository goes beyond a notebook model fit. It includes a reusable feature pipeline, cross-validated model comparison, XGBoost training, SHAP explainability, business value simulation, cohort error analysis, drift monitoring, a FastAPI prediction service, MLflow experiment tracking, and pytest coverage.
 
-~26.5% of telecom customers churn each month. Identifying at-risk customers one billing cycle early lets retention teams intervene before cancellation. This project builds a production-ready churn scoring system that answers four questions a business actually asks:
+## Executive Summary
 
-1. **Who is likely to churn?** → XGBoost classifier, AUC 0.78
-2. **Why?** → SHAP explanations per customer, surfaced in the API response
-3. **What's it worth?** → Business impact simulation with ROI curves
-4. **When should we retrain?** → Population Stability Index drift monitor
+Customer churn is a high-leverage problem for subscription businesses: each saved customer preserves future recurring revenue, but retention outreach is costly if sent indiscriminately. This project builds a churn scoring system that helps a retention team answer four operational questions:
 
----
+| Business question | Project answer |
+| --- | --- |
+| Who is likely to churn? | A supervised classifier scores each customer with `P(churn)` |
+| Why is this customer high risk? | SHAP explanations identify the strongest local prediction drivers |
+| Who should retention contact first? | Customers are ranked by churn risk and evaluated with cumulative gains |
+| Is the model still reliable on new batches? | PSI-based drift monitoring flags shifted feature distributions |
 
-## Model Performance
+The deployed model artifact is an XGBoost classifier trained on engineered Telco customer features and served through FastAPI.
+
+## Dataset
+
+The project uses the IBM Telco Customer Churn schema:
+
+```text
+data/raw/WA_Fn-UseC_-Telco-Customer-Churn.csv
+```
+
+Current local dataset profile:
+
+| Item | Value |
+| --- | ---: |
+| Rows | 7,043 |
+| Raw columns | 21 |
+| Churn rate | 26.5% |
+| Train/test split | 80% / 20%, stratified |
+| Engineered model features | 31 |
+
+If the raw CSV is missing, `download_data.py` attempts public mirrors and falls back to `generate_data.py`, which creates a statistically similar synthetic Telco dataset with the same schema.
+
+## Machine Learning Approach
+
+### Feature Engineering
+
+The shared feature pipeline lives in `src/features.py` and is used by training, notebooks, monitoring, and the API.
+
+Key transformations:
+
+- Converts binary service fields into 0/1 indicators.
+- Treats `No phone service` and `No internet service` as inactive service values.
+- One-hot encodes `InternetService`, `Contract`, and `PaymentMethod`.
+- Converts `TotalCharges` to numeric and handles blank values.
+- Adds engineered features: `num_services`, `avg_monthly_charges`, `charges_increase`, `is_new_customer`, and `is_long_term`.
+
+### Model Comparison
+
+`src/train.py` benchmarks four classifiers with 5-fold stratified cross-validation:
+
+| Model | CV AUC mean | CV AUC std | CV F1 mean |
+| --- | ---: | ---: | ---: |
+| Logistic Regression | 0.7968 | 0.0200 | 0.5448 |
+| Random Forest | 0.7900 | 0.0195 | 0.5360 |
+| Gradient Boosting | 0.7866 | 0.0167 | 0.4268 |
+| XGBoost | 0.7823 | 0.0155 | 0.5327 |
+
+The notebook comparison shows Logistic Regression as the strongest cross-validated baseline by AUC. XGBoost is used for the saved deployment artifact because it supports nonlinear feature interactions, imbalance handling via `scale_pos_weight`, and efficient tree-based SHAP explanations.
+
+### Final Model
+
+The production artifact in `models/churn_model.joblib` is an `XGBClassifier` trained with:
+
+- `n_estimators=300`
+- `max_depth=4`
+- `learning_rate=0.05`
+- `subsample=0.8`
+- `colsample_bytree=0.8`
+- `scale_pos_weight=3`
+
+The API decision threshold is `0.40`, intentionally lower than 0.50 to prioritize recall for retention outreach.
+
+## Key Results
+
+The executed churn analysis notebook reports these held-out XGBoost metrics:
 
 | Metric | Value |
-|--------|-------|
-| Test AUC | **0.84** |
-| F1 | 0.62 |
-| Precision | 0.51 |
-| Recall | 0.78 |
+| --- | ---: |
+| ROC AUC | 0.7802 |
+| F1 | 0.5283 |
+| Precision | 0.4403 |
+| Recall | 0.6604 |
 
-XGBoost with `scale_pos_weight=3` for class imbalance. Decision threshold set to 0.40 — tuned to maximise expected net value rather than raw F1.
+For churn prevention, recall and ranking quality matter because the business goal is to capture as many true churners as possible within an outreach budget. The project therefore includes threshold and top-N business simulations rather than stopping at AUC.
 
----
+## Explainability
 
-## Business Impact Simulation
+Model explanations are implemented in `src/explain.py` with SHAP:
 
-Translating model output into a dollar figure that a stakeholder can act on.
+- `global_importance()` ranks features by mean absolute SHAP value.
+- `local_explanation()` explains a single customer prediction and powers the API response.
 
-**Assumptions** (adjustable): LTV = $600/customer, save rate = 30%, outreach cost = $15/contact.
+Top SHAP drivers from the notebook:
 
-| Strategy | Customers Contacted | Churners Captured | Expected Net Value |
-|----------|--------------------|--------------------|-------------------|
-| Random targeting | 200 | ~75 | $13,500 |
-| **Model (top 200)** | **200** | **~145** | **$26,100** |
-| Optimal threshold | varies | varies | maximised automatically |
+| Rank | Feature | Mean absolute SHAP |
+| ---: | --- | ---: |
+| 1 | `tenure` | 0.6120 |
+| 2 | `Contract_Month-to-month` | 0.4143 |
+| 3 | `InternetService_Fiber optic` | 0.3569 |
+| 4 | `MonthlyCharges` | 0.3037 |
+| 5 | `avg_monthly_charges` | 0.2760 |
 
-The `src/business.py` module sweeps all thresholds and identifies the decision boundary that maximises `revenue_saved − outreach_cost`.
+Operational interpretation:
 
-![Business Impact](figures/expected_value_curve.png)
+- Short-tenure customers are materially higher risk.
+- Month-to-month contracts carry higher churn risk than annual contracts.
+- Fiber customers with high monthly charges are a key retention segment.
+- Missing sticky services such as online security and tech support can indicate weaker customer attachment.
 
-![Cumulative Gains](figures/cumulative_gains.png)
+## Business Impact Layer
 
----
+`src/business.py` converts model scores into retention economics:
 
-## Probability Calibration
+- Expected value at a probability threshold
+- Threshold sweeps to identify the best decision boundary
+- Top-N targeting simulation for fixed outreach capacity
+- Cumulative gains analysis
 
-A model that ranks customers well (AUC 0.84) may still be *overconfident* — assigning probabilities of 0.80 to customers who churn only 50% of the time. That matters here because the business ROI calculation and the threshold choice (0.40) both depend on probabilities being meaningful.
+Default assumptions used by the training pipeline:
 
-![Calibration](figures/calibration.png)
+| Assumption | Value |
+| --- | ---: |
+| Customer lifetime value saved | $600 |
+| Save rate after outreach | 30% |
+| Contact cost | $15 |
 
-**Findings:**
+Generated figures include:
 
-| Metric | Value | Interpretation |
-|--------|-------|----------------|
-| Brier score | ~0.13 | Well below the ~0.19 baseline for a no-skill model at 26.5% churn rate |
-| Calibration slope | ~0.85 | Mild overconfidence — predicted 0.80 corresponds to ~0.68 actual churn |
-| Decision threshold | 0.40 | Chosen to maximise expected net value, not raw F1 (see Business Impact) |
+```text
+figures/expected_value_curve.png
+figures/cumulative_gains.png
+```
 
-The mild overconfidence is typical of gradient-boosted trees with `scale_pos_weight`. It does not significantly affect the ranking (AUC) or the threshold decision, but it should be disclosed when presenting probabilities to stakeholders.
+## Error Analysis and Monitoring
 
----
+`src/evaluate.py` adds calibration and cohort diagnostics:
 
-## SHAP Feature Importance
+- Probability calibration and Brier score
+- Reliability diagram
+- Cohort metrics by contract type
+- Cohort metrics by tenure bucket
 
-![SHAP Feature Importance](figures/shap_importance.png)
+`monitor.py` computes Population Stability Index for each feature in a new customer batch:
 
-**Top churn drivers:**
-1. **Contract type** — Month-to-month customers churn at 3× the rate of two-year contracts
-2. **Tenure** — Short-tenure customers are at peak risk; risk drops steadily after 24 months
-3. **InternetService (Fiber optic)** — Higher charges without perceived value accelerate churn
-4. **OnlineSecurity / TechSupport** — Customers without add-on services have fewer switching costs
+| PSI | Interpretation |
+| ---: | --- |
+| `< 0.10` | Stable |
+| `0.10-0.25` | Monitor |
+| `> 0.25` | Retrain recommended |
 
----
+## FastAPI Scoring Service
 
-## Cohort Error Analysis
+The API in `api/main.py` exposes:
 
-The model does not fail uniformly. Breaking down errors by customer segment reveals where to focus improvement efforts.
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | Confirms model load status and feature count |
+| `POST /predict` | Scores one customer and returns top SHAP drivers |
 
-![Cohort Analysis](figures/cohort_analysis.png)
-
-Key finding: **Month-to-month customers** are the hardest to score accurately because their churn behaviour is driven by short-term triggers (a bad interaction, a competitor offer) that aren't captured by historical billing data.
-
----
-
-## Drift Monitoring
-
-Before scoring a new customer batch, run:
+Example:
 
 ```bash
-python monitor.py --new-data data/raw/new_customers.csv
-```
-
-The monitor computes **Population Stability Index (PSI)** for every feature and flags distribution shifts that may degrade model performance:
-
-| PSI | Meaning |
-|-----|---------|
-| < 0.10 | Stable — use the model as-is |
-| 0.10 – 0.25 | Monitor — increased uncertainty |
-| > 0.25 | Retrain — distribution has shifted significantly |
-
-![Drift Report](figures/drift_report.png)
-
----
-
-## Evaluation
-
-![Evaluation Plots](figures/evaluation_plots.png)
-
----
-
-## Project Structure
-
-```
-churn-prediction/
-├── data/raw/               # Raw CSV (downloaded or synthetic)
-├── models/                 # Saved model artifact (.joblib)
-├── figures/                # All diagnostic and business plots
-├── notebooks/              # Jupyter analysis (fully executed)
-├── src/
-│   ├── features.py         # Feature engineering pipeline
-│   ├── train.py            # Model training, CV comparison, save/load
-│   ├── explain.py          # SHAP global and local explanations
-│   ├── business.py         # ROI simulation, cumulative gains, threshold sweep
-│   └── evaluate.py         # Cohort error analysis + probability calibration
-├── api/
-│   ├── schema.py           # Pydantic request/response models
-│   └── main.py             # FastAPI service with SHAP in every response
-├── tests/                  # 70 tests across all modules
-├── monitor.py              # CLI drift monitor (PSI per feature)
-├── train_pipeline.py       # CLI: train model, generate all figures
-├── build_notebook.py       # Regenerate analysis notebook
-├── download_data.py        # Download IBM dataset or generate synthetic
-└── generate_data.py        # Synthetic Telco churn data generator
-```
-
----
-
-## Experiment Tracking (MLflow)
-
-Every training run is logged automatically with MLflow:
-
-```bash
-# Train and log a run
-python train_pipeline.py --figs
-
-# Browse all runs in the UI
-mlflow ui
-```
-
-Navigate to `http://localhost:5000` to compare runs, inspect parameters, metrics, and download logged figures and model artifacts.
-
-**What gets logged per run:**
-
-| Category | Items |
-|----------|-------|
-| Parameters | model name, test size, random seed, decision threshold, all model hyperparams |
-| Metrics | AUC, F1, precision, recall, Brier score, calibration slope, Precision@200, revenue saved, lift |
-| Artifacts | all figures (calibration, ROC, SHAP, business impact, cohort analysis), model (.joblib + sklearn flavor) |
-
-Runs are stored locally in `mlruns/` — no server required.
-
----
-
-## Skills Demonstrated
-
-| Area | Technique |
-|------|-----------|
-| Feature engineering | One-hot encoding, binary mapping, engineered charge ratios |
-| Class imbalance | `scale_pos_weight`, `class_weight="balanced"`, threshold tuning |
-| Model selection | 4-model CV comparison (LR, RF, GBM, XGBoost) |
-| Interpretability | SHAP global importance + per-customer local explanations in API |
-| Business translation | ROI simulation, cumulative gains curve, optimal threshold search |
-| Cohort analysis | Precision/recall breakdown by contract type and tenure bucket |
-| Probability calibration | Reliability diagram, Brier score, calibration slope — not just AUC |
-| Experiment tracking | MLflow logging of params, metrics, figures, and model artifact per run |
-| Production monitoring | PSI-based feature drift detection with retrain recommendation |
-| API design | FastAPI with Pydantic validation, SHAP explanations in response |
-| Testing | pytest tests: features, training, API, business, evaluate, monitor |
-
----
-
-## Quickstart
-
-```bash
-# Install
-pip install -r requirements.txt
-
-# Get data
-python download_data.py
-
-# Train + generate all figures
-python train_pipeline.py --figs --compare
-
-# Run tests
-pytest tests/ -v   # expected: 70 passed
-
-# Serve predictions
 uvicorn api.main:app --reload
 ```
 
-**Score a customer:**
-```bash
-curl -X POST http://localhost:8000/predict \
-  -H "Content-Type: application/json" \
-  -d '{
-    "gender": "Male", "SeniorCitizen": 0, "Partner": "No", "Dependents": "No",
-    "tenure": 3, "PhoneService": "Yes", "MultipleLines": "No",
-    "InternetService": "Fiber optic", "OnlineSecurity": "No", "OnlineBackup": "No",
-    "DeviceProtection": "No", "TechSupport": "No",
-    "StreamingTV": "Yes", "StreamingMovies": "Yes",
-    "Contract": "Month-to-month", "PaperlessBilling": "Yes",
-    "PaymentMethod": "Electronic check",
-    "MonthlyCharges": 89.10, "TotalCharges": 267.30
-  }'
+Open:
+
+```text
+http://localhost:8000/docs
 ```
 
-**Response:**
-```json
-{
-  "churn_probability": 0.7831,
-  "churn_prediction": true,
-  "threshold": 0.4,
-  "top_factors": [
-    {"feature": "Contract_Month-to-month", "value": 1.0, "shap": 0.312},
-    {"feature": "tenure",                  "value": 3.0, "shap": 0.289},
-    {"feature": "InternetService_Fiber optic", "value": 1.0, "shap": 0.198}
-  ]
-}
+## Repository Structure
+
+```text
+churn-prediction/
+├── api/
+│   ├── main.py
+│   └── schema.py
+├── data/raw/
+├── figures/
+├── models/
+│   └── churn_model.joblib
+├── notebooks/
+│   ├── churn_analysis.ipynb
+│   └── ab_analysis.ipynb
+├── src/
+│   ├── business.py
+│   ├── evaluate.py
+│   ├── explain.py
+│   ├── features.py
+│   └── train.py
+├── tests/
+├── download_data.py
+├── generate_data.py
+├── monitor.py
+├── train_pipeline.py
+└── requirements.txt
 ```
 
-**Browse experiment runs:**
+## How to Run
+
+Install dependencies:
+
 ```bash
-mlflow ui   # open http://localhost:5000
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-**Check for data drift before scoring a new batch:**
+Get data:
+
 ```bash
-python monitor.py --new-data data/raw/new_customers.csv --output reports/drift.csv
+python download_data.py
 ```
+
+Train the model:
+
+```bash
+python train_pipeline.py --figs --compare
+```
+
+Run tests:
+
+```bash
+pytest -q
+```
+
+Run drift monitoring:
+
+```bash
+python monitor.py --new-data data/raw/new_customers.csv --output reports/drift_report.csv
+```
+
+## Experiment Tracking
+
+Training uses MLflow locally:
+
+```bash
+mlflow ui
+```
+
+Open:
+
+```text
+http://localhost:5000
+```
+
+Logged items include parameters, AUC, F1, precision, recall, Brier score, calibration slope, business metrics, figures, and model artifacts.
+
+## Skills Demonstrated
+
+| Area | Evidence |
+| --- | --- |
+| Supervised learning | Stratified train/test split, four-model benchmark |
+| Feature engineering | Shared deterministic transform layer |
+| Class imbalance | Balanced baselines and XGBoost `scale_pos_weight` |
+| Model evaluation | ROC, PR, confusion matrix, calibration, cohort analysis |
+| Explainable AI | SHAP global importance and local API explanations |
+| Business analytics | Expected value curves, top-N retention targeting |
+| MLOps readiness | Saved model metadata, MLflow logging, drift monitoring |
+| Production API | FastAPI service with Pydantic validation |
+| Testing | Unit and API tests across features, model, business logic, monitoring |
+
+## Notes for Reviewers
+
+This project is intentionally designed as a realistic data science deliverable rather than a single accuracy-maximizing notebook. The model is framed around decisions: who to contact, why they are at risk, what the expected value is, and when the model should be questioned due to drift.
+
