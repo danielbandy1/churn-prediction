@@ -112,6 +112,9 @@ def save_model(model, feature_names: list[str], path: pathlib.Path | None = None
     joblib.dump({
         "model": model,
         "feature_names": feature_names,
+        # ONEHOT_COLUMNS is only populated after engineer_features() runs in
+        # this process. Always call engineer_features() before save_model() or
+        # this will persist as an empty list, breaking API inference alignment.
         "onehot_columns": getattr(features_module, "ONEHOT_COLUMNS", []),
     }, path)
     return path
