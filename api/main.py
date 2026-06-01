@@ -21,7 +21,7 @@ import src.features as features_module
 from src.features import build_features
 from src.train import load_model, load_model_with_metadata
 from src.explain import local_explanation
-from api.schema import BatchRequest, BatchResponse, CustomerFeatures, PredictionResponse, HealthResponse
+from api.schema import BatchRequest, BatchResponse, CustomerFeatures, ExplanationResponse, PredictionResponse, HealthResponse
 
 MODEL_PATH = pathlib.Path(__file__).parent.parent / "models" / "churn_model.joblib"
 THRESHOLD = 0.40   # lower threshold → catch more churners at cost of precision
@@ -111,6 +111,33 @@ def predict(customer: CustomerFeatures):
         threshold=THRESHOLD,
         top_factors=top_factors,
     )
+
+@app.post("/explain", response_model=ExplanationResponse, tags=["prediction"])
+def explain(customer: CustomerFeatures):
+    if _model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    X = _build_input_df(customer)
+    prob = float(_model.predict_proba(X)[0, 1])
+    try:
+        explanation = local_explanation(_model, X, _feature_names)
+        shap_values = [
+            {
+                "feature": row["feature"],
+                "value": float(row["value"]),
+                "shap": round(float(row["shap_value"]), 6),
+            }
+            for _, row in explanation.iterrows()
+        ]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"SHAP explanation failed: {exc}")
+
+    return ExplanationResponse(
+        churn_probability=round(prob, 4),
+        threshold=THRESHOLD,
+        shap_values=shap_values,
+    )
+
 
 @app.post("/batch", response_model=BatchResponse, tags=["prediction"])
 def predict_batch(request: BatchRequest):
