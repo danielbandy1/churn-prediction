@@ -52,6 +52,12 @@ class PredictionResponse(BaseModel):
     top_factors: list[dict]  = Field(..., description="Top SHAP features driving this prediction")
 
 
+class ExplanationResponse(BaseModel):
+    churn_probability: float = Field(..., description="P(churn) from 0-1")
+    threshold: float = Field(..., description="Decision threshold used")
+    shap_values: list[dict] = Field(..., description="Per-feature SHAP values sorted by impact")
+
+
 class BatchResponse(BaseModel):
     predictions: list[PredictionResponse] = Field(
         ...,
