@@ -4,6 +4,7 @@ FastAPI churn prediction service.
 Endpoints:
   GET  /health   — liveness + model info
   POST /predict  — single-customer churn probability with SHAP explanation
+  POST /batch    — bulk churn probabilities without SHAP explanations
 """
 
 import pathlib
@@ -20,7 +21,7 @@ import src.features as features_module
 from src.features import build_features
 from src.train import load_model, load_model_with_metadata
 from src.explain import local_explanation
-from api.schema import CustomerFeatures, PredictionResponse, HealthResponse
+from api.schema import BatchRequest, BatchResponse, CustomerFeatures, PredictionResponse, HealthResponse
 
 MODEL_PATH = pathlib.Path(__file__).parent.parent / "models" / "churn_model.joblib"
 THRESHOLD = 0.40   # lower threshold → catch more churners at cost of precision
@@ -110,3 +111,24 @@ def predict(customer: CustomerFeatures):
         threshold=THRESHOLD,
         top_factors=top_factors,
     )
+
+@app.post("/batch", response_model=BatchResponse, tags=["prediction"])
+def predict_batch(request: BatchRequest):
+    if _model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    frames = [_build_input_df(customer) for customer in request.customers]
+    X = pd.concat(frames, ignore_index=True)
+    probabilities = _model.predict_proba(X)[:, 1]
+
+    predictions = [
+        PredictionResponse(
+            churn_probability=round(float(prob), 4),
+            churn_prediction=bool(prob >= THRESHOLD),
+            threshold=THRESHOLD,
+            top_factors=[],
+        )
+        for prob in probabilities
+    ]
+    return BatchResponse(predictions=predictions)
+

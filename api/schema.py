@@ -36,11 +36,27 @@ class CustomerFeatures(BaseModel):
     }}}
 
 
+class BatchRequest(BaseModel):
+    customers: list[CustomerFeatures] = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="Customers to score in one request (1-500).",
+    )
+
+
 class PredictionResponse(BaseModel):
     churn_probability: float = Field(..., description="P(churn) from 0–1")
     churn_prediction: bool   = Field(..., description="True if probability >= threshold")
     threshold: float         = Field(..., description="Decision threshold used")
     top_factors: list[dict]  = Field(..., description="Top SHAP features driving this prediction")
+
+
+class BatchResponse(BaseModel):
+    predictions: list[PredictionResponse] = Field(
+        ...,
+        description="Predictions returned in the same order as the request.",
+    )
 
 
 class HealthResponse(BaseModel):
