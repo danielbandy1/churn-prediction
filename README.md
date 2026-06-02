@@ -1,6 +1,13 @@
 # Telco Customer Churn Prediction
 
-An end-to-end machine learning project for identifying telecom customers at risk of churn, explaining the drivers behind each prediction, and translating model scores into retention actions.
+[![Result](https://img.shields.io/badge/ROC--AUC-0.7802-blue)](#key-results)
+[![Recall](https://img.shields.io/badge/recall-66.0%25-green)](#key-results)
+[![API](https://img.shields.io/badge/API-FastAPI-009688)](#fastapi-scoring-service)
+[![Monitoring](https://img.shields.io/badge/drift-PSI%20monitoring-orange)](#error-analysis-and-monitoring)
+
+End-to-end churn prediction system for ranking telecom customers by cancellation risk, explaining the drivers behind each score, and turning model output into retention actions.
+
+**Result callout:** XGBoost reaches **ROC AUC 0.7802** and **66.0% recall** on the held-out split, with SHAP explanations, business-value threshold simulation, PSI drift monitoring, and a FastAPI scoring service.
 
 This repository goes beyond a notebook model fit. It includes a reusable feature pipeline, cross-validated model comparison, XGBoost training, SHAP explainability, business value simulation, cohort error analysis, drift monitoring, a FastAPI prediction service, MLflow experiment tracking, and pytest coverage.
 
@@ -271,4 +278,3 @@ Logged items include parameters, AUC, F1, precision, recall, Brier score, calibr
 ## Notes for Reviewers
 
 This project is intentionally designed as a realistic data science deliverable rather than a single accuracy-maximizing notebook. The model is framed around decisions: who to contact, why they are at risk, what the expected value is, and when the model should be questioned due to drift.
-
